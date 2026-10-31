@@ -751,6 +751,20 @@ impl Session {
         }
     }
 
+    /// Install a validated provider project whose media has already been restored by the host.
+    /// Provider identity remains in the frontend; no synthetic path enters local Recent files.
+    pub fn replace_external_project(&mut self, loaded: filmcraft_format::Loaded) {
+        let schema = loaded.schema_version;
+        commands::install_project(self, loaded.project, None, true);
+        if let Some(view) = loaded.view.filter(|_| self.prefs.timeline.restore_open_sequences) {
+            self.restore_project_view(view);
+        }
+        self.loaded_schema = schema;
+        if let Some(sequence) = self.state.active_sequence {
+            self.events.push(Event::OpenSequence(sequence));
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }

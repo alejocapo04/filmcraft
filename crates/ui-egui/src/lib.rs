@@ -397,3 +397,8 @@ pub struct GpuState {
     /// Largest texture side the device accepts.
     pub max_texture: u32,
 }
+
+/// Optional file-provider capability; dormant until a trusted host registers one.
+pub mod file_providers;
+pub mod provider_bundle;
+pub mod provider_ui;

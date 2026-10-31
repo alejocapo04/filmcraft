@@ -47,10 +47,14 @@ web-sys = { version = "0.3", features = [
     "CssStyleDeclaration",
     "DataTransfer",
     "Document",
-    "DragEvent",
-    "Element",
+    "CustomEvent",
+    "CustomEventInit",
     "Event",
     "EventTarget",
+    "DragEvent",
+    "Element",
+
+
     "File",
     "FileList",
     "FileSystemDirectoryHandle",

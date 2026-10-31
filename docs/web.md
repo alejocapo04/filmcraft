@@ -143,3 +143,9 @@ cargo xtask web --serve 8765 &
 ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -f lavfi -i sine -t 3 -c:v libx264 -pix_fmt yuv420p -c:a aac target/web/dist/web-test.mp4
 node apps/filmcraft-web/tests/smoke.mjs --url http://127.0.0.1:8765/ --media web-test.mp4 --out target/web/smoke
 ```
+
+## Optional external file providers
+
+A trusted same-origin host can explicitly register an account-scoped file provider for Save/Save As
+and a separate native Recent section. The feature is disabled by default; ordinary browser
+downloads and desktop/CLI saving are unchanged. See the [protocol and media-bundle contract](../packaging/web/file-providers.md).

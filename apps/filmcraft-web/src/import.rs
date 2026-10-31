@@ -39,7 +39,9 @@ fn be32(b: &[u8]) -> u64 {
 async fn prewarm(path: &str, size: u64) {
     let head_len = size.min(64 << 10);
     fs::prefetch(path, 0, head_len).await;
-    let Ok(head) = fs::WebServices.read_range(path, 0, head_len as usize) else { return };
+    let Ok(head) = fs::WebServices.read_range(path, 0, head_len as usize) else {
+        return;
+    };
     if filmcraft_codecs::mp4::sniff(&head) {
         // walk the top-level boxes to the `moov`
         let mut off = 0u64;
@@ -48,7 +50,9 @@ async fn prewarm(path: &str, size: u64) {
                 break;
             }
             fs::prefetch(path, off, off + 16).await;
-            let Ok(h) = fs::WebServices.read_range(path, off, 16) else { break };
+            let Ok(h) = fs::WebServices.read_range(path, off, 16) else {
+                break;
+            };
             if h.len() < 8 {
                 break;
             }
@@ -134,16 +138,31 @@ pub async fn import_files(files: Vec<web_sys::File>) -> Value {
 
 /// Open a `.fcproj` file picked or dropped by the user.
 pub async fn open_project_file(file: web_sys::File) -> Result<Value, String> {
+    if file.name().to_ascii_lowercase().ends_with(".fcbundle") {
+        if file.size() > 80.0 * 1024.0 * 1024.0 {
+            return Err("Provider bundle exceeds 80 MiB".into());
+        }
+        let data = JsFuture::from(file.array_buffer()).await.map_err(|e| format!("{e:?}"))?;
+        let bytes = js_sys::Uint8Array::new(&data).to_vec();
+        return on_ui(move |w, _| crate::provider_storage::open_device(&mut w.app, &bytes).map(|_| serde_json::Value::Null)).await;
+    }
     let buf = JsFuture::from(file.array_buffer()).await.map_err(|e| format!("{e:?}"))?;
     let path = format!("/projects/{}", file.name());
     fs::put(&path, js_sys::Uint8Array::new(&buf).to_vec());
-    on_ui(move |w, _| w.app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())).await
+    on_ui(move |w, _| {
+        if w.app.hooks.file_providers.busy() {
+            return Err("Finish or cancel the pending provider operation first".into());
+        }
+        w.app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Handle files from a picker or a drop: projects open, everything else is imported.
 pub fn take_files(files: Vec<web_sys::File>) {
     wasm_bindgen_futures::spawn_local(async move {
-        let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.name().to_ascii_lowercase().ends_with(".fcproj"));
+        let (projects, media): (Vec<_>, Vec<_>) =
+            files.into_iter().partition(|f| f.name().to_ascii_lowercase().ends_with(".fcproj") || f.name().to_ascii_lowercase().ends_with(".fcbundle"));
         for p in projects {
             if let Err(e) = open_project_file(p).await {
                 crate::post(move |w, _| w.app.status(e));
@@ -158,8 +177,12 @@ pub fn take_files(files: Vec<web_sys::File>) {
 /// Files a picker returned: imported, or with a relink hint, the first one is registered under
 /// `/files/<name>` and the hint's command runs on it (#111).
 fn picked(files: Vec<web_sys::File>, relink: Option<RelinkHint>) {
-    let Some(hint) = relink else { return take_files(files) };
-    let Some(f) = files.into_iter().next() else { return };
+    let Some(hint) = relink else {
+        return take_files(files);
+    };
+    let Some(f) = files.into_iter().next() else {
+        return;
+    };
     wasm_bindgen_futures::spawn_local(async move {
         let path = fs::register_blob(&f.name(), f.clone().into());
         crate::recovery::keep_media(&path, &f);
@@ -198,10 +221,16 @@ fn pick_then(exts: &[&str], multiple: bool, relink: Option<RelinkHint>) {
         let _ = js_sys::Reflect::set(&opts, &"multiple".into(), &multiple.into());
         wasm_bindgen_futures::spawn_local(async move {
             let Some(w) = web_sys::window() else { return };
-            let Ok(f) = js_sys::Reflect::get(&w, &"showOpenFilePicker".into()).and_then(|f| f.dyn_into::<js_sys::Function>()) else { return };
-            let Ok(p) = f.call1(&w, &opts).and_then(|p| p.dyn_into::<js_sys::Promise>()) else { return };
+            let Ok(f) = js_sys::Reflect::get(&w, &"showOpenFilePicker".into()).and_then(|f| f.dyn_into::<js_sys::Function>()) else {
+                return;
+            };
+            let Ok(p) = f.call1(&w, &opts).and_then(|p| p.dyn_into::<js_sys::Promise>()) else {
+                return;
+            };
             // rejected when the user cancels
-            let Ok(handles) = JsFuture::from(p).await else { return };
+            let Ok(handles) = JsFuture::from(p).await else {
+                return;
+            };
             let mut files = Vec::new();
             for h in js_sys::Array::from(&handles).iter() {
                 if let Ok(h) = h.dyn_into::<web_sys::FileSystemFileHandle>()
@@ -215,8 +244,12 @@ fn pick_then(exts: &[&str], multiple: bool, relink: Option<RelinkHint>) {
         });
         return;
     }
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
-    let Ok(input) = doc.create_element("input").and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().map_err(Into::into)) else { return };
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(input) = doc.create_element("input").and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().map_err(Into::into)) else {
+        return;
+    };
     input.set_type("file");
     input.set_multiple(multiple);
     input.set_accept(&accept.join(","));
@@ -258,7 +291,7 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
         Vec::new()
     }));
     app.hooks.pick_open_project = Some(Box::new(|| {
-        pick(&["fcproj"], false);
+        pick(&["fcproj", "fcbundle"], false);
         None
     }));
     // Saving writes the file in memory and offers it as a download (`fs::WebServices`).

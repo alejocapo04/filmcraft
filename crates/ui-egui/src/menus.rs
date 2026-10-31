@@ -195,8 +195,12 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 /// its text. False when no text field has the keyboard.
 fn select_all_in_text_field(ctx: &egui::Context) -> bool {
     use egui::text::{CCursor, CCursorRange};
-    let Some(id) = ctx.memory(|m| m.focused()) else { return false };
-    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return false };
+    let Some(id) = ctx.memory(|m| m.focused()) else {
+        return false;
+    };
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else {
+        return false;
+    };
     state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
     state.store(ctx, id);
     true
@@ -204,6 +208,9 @@ fn select_all_in_text_field(ctx: &egui::Context) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if let Some(result) = crate::provider_ui::choose(app, id) {
+        return result;
+    }
     // A focused text field takes Select All before the Project panel redirect below, or the
     // Project search box would select items.
     if id == "edit.selectAll" && select_all_in_text_field(ctx) {
@@ -638,6 +645,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         crate::panels::settings::set_theme(app, ctx, k);
         return Ok(Value::Null);
     }
+    if let Some(resource) = id.strip_prefix("file.providerRecent.") {
+        return app.hooks.file_providers.request_open(resource).map(|request| json!({"requestId":request}));
+    }
     // File ▸ Open Recent
     if let Some(i) = id.strip_prefix("file.openRecent.") {
         let path = i.parse::<usize>().ok().and_then(|i| app.session.prefs.general.recent_projects.get(i).cloned()).ok_or("no such recent project")?;
@@ -922,6 +932,24 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     }
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
+    if app.hooks.file_providers.enabled() {
+        let snapshot = app.hooks.file_providers.snapshot();
+        let label = snapshot.get("label").and_then(Value::as_str).unwrap_or("Provider");
+        if let Some(resources) = snapshot.get("resources").and_then(Value::as_array) {
+            for resource in resources {
+                if let (Some(id), Some(name)) = (resource.get("id").and_then(Value::as_str), resource.get("name").and_then(Value::as_str)) {
+                    v.push(MenuItem {
+                        id: format!("file.providerRecent.{id}"),
+                        label: name.into(),
+                        path: vec!["File".into(), format!("Recent — {label}")],
+                        shortcut: None,
+                        enabled: true,
+                        checked: None,
+                    });
+                }
+            }
+        }
+    }
     v
 }
 
@@ -944,7 +972,9 @@ fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> 
 /// newest first, then Clear Recent Files. Clear is always there, so the submenu exists (in the
 /// native menu too, built once at launch) before the first project is saved.
 fn open_recent(items: &mut Vec<MenuItem>, session: &filmcraft_engine::Session, tr: impl Fn(&str) -> String) {
-    let Some(at) = items.iter().position(|it| it.id == "file.open") else { return };
+    let Some(at) = items.iter().position(|it| it.id == "file.open") else {
+        return;
+    };
     let path: Vec<String> = vec!["File".into(), "Open Recent".into()];
     let recent = &session.prefs.general.recent_projects;
     let mut sub: Vec<MenuItem> = recent
@@ -1154,7 +1184,9 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 /// top-level title opens that menu instead (#1500). egui's `MenuBar` only switches on click.
 fn switch_on_hover(ctx: &egui::Context, titles: &[egui::Response]) {
     let ids: Vec<egui::Id> = titles.iter().map(egui::Popup::default_response_id).collect();
-    let Some(open) = ids.iter().position(|id| egui::Popup::is_id_open(ctx, *id)) else { return };
+    let Some(open) = ids.iter().position(|id| egui::Popup::is_id_open(ctx, *id)) else {
+        return;
+    };
     // `hovered` is false where a popup covers the title (a tall submenu pushed up over the
     // bar), so the pointer inside an open menu never switches it.
     if let Some(i) = titles.iter().position(egui::Response::hovered)
@@ -1386,7 +1418,7 @@ mod tests {
     fn default_menu_items_are_the_shipped_menu_bar() {
         let items = default_menu_items();
         assert!(items.len() > 300, "{} items", items.len());
-        assert!(items.iter().all(|it| it.path.first().is_some_and(|top| MENUS.contains(&top.as_str()))));
+        assert!(items.iter().all(|it| { it.path.first().is_some_and(|top| MENUS.contains(&top.as_str())) }));
         let ws: Vec<&MenuItem> = items.iter().filter(|it| it.path == ["Window", "Workspaces"]).collect();
         for name in crate::dock::WORKSPACES {
             assert!(ws.iter().any(|it| it.label == name && it.checked.is_none()), "no workspace {name}");

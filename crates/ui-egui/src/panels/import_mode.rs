@@ -80,13 +80,26 @@ const RECENT_ROW_H: f32 = 28.0;
 
 /// Home's Recent list at `y`: the recent projects (newest first, file name with its folder beside
 /// it), a click opens one. Returns where the next section starts.
-fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 {
+fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, mut y: f32) -> f32 {
+    if app.hooks.file_providers.enabled() {
+        let r = Rect::from_min_size(rect.min + vec2(24.0, y), vec2((rect.width() - 48.0).max(0.0), 160.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+            egui::ScrollArea::vertical().id_salt("file-provider-home").max_height(150.0).show(ui, |ui| crate::provider_ui::recent(app, ui));
+        });
+        y += 170.0;
+    }
     let paths: Vec<String> = app.session.prefs.general.recent_projects.iter().take(RECENT_ROWS).cloned().collect();
     if paths.is_empty() {
         return y;
     }
     let t = app.tokens;
-    ui.painter().text(rect.min + vec2(24.0, y), Align2::LEFT_CENTER, tl!("Recent"), Tokens::semibold(15.0), t.text);
+    ui.painter().text(
+        rect.min + vec2(24.0, y),
+        Align2::LEFT_CENTER,
+        if app.hooks.file_providers.enabled() { "Recent on this device" } else { tl!("Recent") },
+        Tokens::semibold(15.0),
+        t.text,
+    );
     let mut open = None;
     for (i, path) in paths.iter().enumerate() {
         let row =

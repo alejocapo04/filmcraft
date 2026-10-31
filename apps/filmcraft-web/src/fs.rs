@@ -289,7 +289,9 @@ impl ByteReader for BlobReader {
             let mut pos = 0usize;
             for c in c0..=c1 {
                 // Present (checked above); evicted in between would be a bug, reported as an error.
-                let Some((d, used)) = fs.chunks.get_mut(&(self.id, c)) else { return false };
+                let Some((d, used)) = fs.chunks.get_mut(&(self.id, c)) else {
+                    return false;
+                };
                 *used = t;
                 let a = if c == c0 { (offset - c * CHUNK) as usize } else { 0 };
                 let n = (d.len() - a).min(buf.len() - pos);
@@ -395,7 +397,9 @@ impl Services for WebServices {
             let mut dirs: Vec<String> = Vec::new();
             let mut files = Vec::new();
             for (path, e) in &fs.entries {
-                let Some(rest) = path.strip_prefix(&prefix) else { continue };
+                let Some(rest) = path.strip_prefix(&prefix) else {
+                    continue;
+                };
                 match rest.split_once('/') {
                     Some((d, _)) if !d.is_empty() => {
                         if !dirs.iter().any(|x| x == d) {
@@ -486,4 +490,10 @@ mod exclusive_write_tests {
             fs.entries.remove(fresh);
         });
     }
+}
+
+/// Discard only previous provider staging buffers after their single project was replaced.
+pub fn retain_provider_root(root: &str) {
+    let prefix = format!("{root}/");
+    FS.with(|fs| fs.borrow_mut().entries.retain(|path, _| !path.starts_with("/__file_provider/") || path.starts_with(&prefix)));
 }

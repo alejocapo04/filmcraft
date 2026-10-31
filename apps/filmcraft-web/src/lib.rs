@@ -21,9 +21,11 @@
 pub mod api;
 pub mod audio;
 pub mod download_pacing;
+mod file_providers;
 pub mod fs;
 pub mod import;
 pub mod opfs;
+mod provider_storage;
 pub mod recovery;
 pub mod recovery_policy;
 pub mod webcodecs;
@@ -101,6 +103,7 @@ impl eframe::App for WebApp {
             f(self, ctx);
         }
         self.app.logic_inner(ctx);
+        provider_storage::tick(&mut self.app);
         api::poll_replies();
         // exports advance between frames (no threads)
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {
@@ -189,6 +192,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 let mut app = FilmcraftApp::new(session);
                 import::install_hooks(&mut app);
+                file_providers::install(app.hooks.file_providers.clone(), cc.egui_ctx.clone()).map_err(|e| format!("file providers: {e:?}"))?;
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
