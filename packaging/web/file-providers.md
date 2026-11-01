@@ -63,6 +63,8 @@ that range. A missing first, interior or final frame, ambiguous frame names, or 
 sequence timing rejects capture or open before replacing the current project. Metadata alone or a
 valid bundle checksum cannot establish that a sequence is complete.
 
+Rebasing is limited to primary and proxy MediaRef::File paths in the native project. Graphic text, metadata, caption arrays and saved-view strings remain unchanged even when their contents equal a media path.
+
 Each provider operation is bounded to **80 MiB**. Media/path metadata and decoded asset counts are
 bounded independently. Large projects fail before a save event; local/native workflows remain
 available. No cloud project is marked saved merely because serialization or a download completed.

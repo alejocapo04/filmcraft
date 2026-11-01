@@ -173,34 +173,28 @@ fn validate_image_sequence(first: &str, info: &filmcraft_media::MediaInfo, avail
     Ok(())
 }
 
-/// Rebase media references and file properties without touching document text.
+/// Rebase only native primary/proxy MediaRef::File paths, never arbitrary text or arrays.
 pub fn rewrite(value: &mut serde_json::Value, replacements: &BTreeMap<String, String>) {
-    match value {
-        serde_json::Value::String(s) => {
-            if let Some(p) = replacements.get(s) {
-                *s = p.clone();
-            }
-        }
-        serde_json::Value::Array(a) => {
-            for v in a {
-                rewrite(v, replacements);
-            }
-        }
-        serde_json::Value::Object(o) => {
-            if o.get("t").and_then(serde_json::Value::as_str) == Some("Str") {
-                if let Some(v) = o.get_mut("v") {
-                    rewrite(v, replacements);
-                }
-            }
-            for (key, v) in o.iter_mut() {
-                if matches!(key.as_str(), "path" | "sequence") {
-                    rewrite(v, replacements);
-                } else if v.is_object() || v.is_array() {
-                    rewrite(v, replacements);
+    if let Some(project) = value.get_mut("project") {
+        rewrite_project(project, replacements);
+    } else {
+        rewrite_project(value, replacements);
+    }
+}
+
+fn rewrite_project(value: &mut serde_json::Value, replacements: &BTreeMap<String, String>) {
+    let Some(items) = value.get_mut("items").and_then(serde_json::Value::as_object_mut) else { return };
+    for item in items.values_mut() {
+        if let Some(media) = item.get_mut("kind").and_then(|kind| kind.get_mut("Media")) {
+            for key in ["media", "proxy"] {
+                if let Some(serde_json::Value::String(path)) =
+                    media.get_mut(key).and_then(|reference| reference.get_mut("File")).and_then(|file| file.get_mut("path"))
+                    && let Some(staged) = replacements.get(path)
+                {
+                    *path = staged.clone();
                 }
             }
         }
-        _ => {}
     }
 }
 
@@ -371,6 +365,62 @@ mod tests {
         let media = project.items.values_mut().next().unwrap().as_media_mut().unwrap();
         media.info.video.as_mut().unwrap().frame_rate.den = 0;
         assert!(validate_media(&project, ["/picked/shot_0042.png", "/picked/shot_0043.png"]).is_err());
+    }
+
+    #[test]
+    fn provider_media_rebase_preserves_native_text_metadata_and_caption_arrays() {
+        use filmcraft_project::{CaptionFormat, CaptionTrack, ItemKind, Label, MediaRef, ParamValue, SequenceSettings, SourceGraphic, TrackId};
+        let path = "/picked/shot_0042.png";
+        let next = "/picked/shot_0043.png";
+        let mut project = sequence_project(2);
+        let media_id = *project.items.keys().next().unwrap();
+        let item = project.items.get_mut(&media_id).unwrap();
+        item.metadata.insert("path".into(), path.into());
+        item.as_media_mut().unwrap().proxy = Some(MediaRef::File { path: path.into() });
+        project.notes = path.into();
+        let sequence_id = project.new_sequence("Captions", SequenceSettings::default(), 1, 0, None);
+        let mut captions = CaptionTrack::new(TrackId(project.alloc_id()), "Subtitles".into(), CaptionFormat::Subtitle);
+        captions.vtt_blocks.push(path.into());
+        project.sequence_mut(sequence_id).unwrap().caption_tracks.push(captions);
+        let graphic_id =
+            project.add_item("Literal title", Label::Iris, ItemKind::Graphic { width: 1, height: 1, rate: filmcraft_time::FrameRate::FPS_25 }, None);
+        project.source_graphics.insert(
+            graphic_id,
+            SourceGraphic { layers: vec![filmcraft_project::graphic::new_text_layer(path, filmcraft_geom::Vec2::new(0.0, 0.0), 20.0)], meta: None },
+        );
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(1, 1, image::Rgba([12, 34, 56, 255])))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = png.into_inner();
+        let bundle = Bundle { project: serde_json::to_vec(&project).unwrap(), assets: BTreeMap::from([(path.into(), bytes.clone()), (next.into(), bytes)]) };
+        let decoded = Bundle::decode(&bundle.encode().unwrap()).unwrap();
+        let native: filmcraft_project::Project = serde_json::from_slice(&decoded.project).unwrap();
+        validate_media(&native, decoded.assets.keys().map(String::as_str)).unwrap();
+        let staged = stage_path("/__file_provider/open-text", path).unwrap();
+        let replacements = BTreeMap::from([(path.into(), staged.clone()), (next.into(), stage_path("/__file_provider/open-text", next).unwrap())]);
+        // Both the native file envelope and the legacy bare project preserve non-file strings.
+        for envelope in [false, true] {
+            let mut json = serde_json::to_value(&native).unwrap();
+            if envelope {
+                json = serde_json::json!({"project": json, "view": {"selected": [path]}});
+            }
+            rewrite(&mut json, &replacements);
+            if envelope {
+                assert_eq!(json["view"]["selected"][0], path);
+            }
+            let restored: filmcraft_project::Project = serde_json::from_value(if envelope { json["project"].take() } else { json }).unwrap();
+            let item = restored.items.get(&media_id).unwrap();
+            let media = item.as_media().unwrap();
+            assert_eq!(media.media, MediaRef::File { path: staged.clone() });
+            assert_eq!(media.proxy, Some(MediaRef::File { path: staged.clone() }));
+            assert_eq!(item.metadata.get("path").unwrap(), path);
+            assert_eq!(restored.notes, path);
+            assert_eq!(restored.sequence(sequence_id).unwrap().caption_tracks.first().unwrap().vtt_blocks, vec![path]);
+            let layer = restored.source_graphics.get(&graphic_id).unwrap().layers.first().unwrap();
+            assert_eq!(layer.params.get("text").unwrap().value, ParamValue::Text(path.into()));
+        }
+        assert_eq!(image::load_from_memory(decoded.assets.get(path).unwrap()).unwrap().width(), 1);
     }
 
     #[test]
