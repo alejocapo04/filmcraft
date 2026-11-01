@@ -84,7 +84,9 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, mut y: f32) -> 
     if app.hooks.file_providers.enabled() {
         let r = Rect::from_min_size(rect.min + vec2(24.0, y), vec2((rect.width() - 48.0).max(0.0), 160.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
-            egui::ScrollArea::vertical().id_salt("file-provider-home").max_height(150.0).show(ui, |ui| crate::provider_ui::recent(app, ui));
+            egui::ScrollArea::vertical().id_salt("file-provider-home").max_height(150.0).show(ui, |ui| {
+                app.hooks.file_providers.recent_provider_ui(ui);
+            });
         });
         y += 170.0;
     }
