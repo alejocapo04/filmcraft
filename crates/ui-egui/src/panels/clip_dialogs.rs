@@ -350,7 +350,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
     // a never-saved project is saved through the Save dialog
-    let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
+    let can_save = app.hooks.file_providers.enabled()
+        || app.session.path.is_some()
+        || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
@@ -696,6 +698,20 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             return;
         }
         Some("save") => {
+            if let Some(result) = crate::provider_ui::choose(app, "file.save") {
+                // Choosing a destination is not a durable save. Dismiss this prompt without
+                // closing the project; after saving, Close/Quit can be requested again. This
+                // also keeps cancellation, downloads and later edits from completing Quit.
+                match result {
+                    Ok(_) => app.ui.clip_dialog = None,
+                    Err(error) => {
+                        app.ui.status = error.clone();
+                        d.error = error;
+                        app.ui.clip_dialog = Some(d);
+                    }
+                }
+                return;
+            }
             if app.session.path.is_some() {
                 if let Err(e) = app.session.execute("file.save", json!({})) {
                     app.ui.status = e.to_string();
@@ -793,6 +809,82 @@ fn finish(d: &ClipDialogDraft) -> Value {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn provider_prompt_save_uses_destination_choice_and_never_closes_early() {
+        for command in ["file.closeProject", "app.quit"] {
+            for destination in ["provider", "device", "cancel"] {
+                for existing_path in [false, true] {
+                    assert_provider_prompt_save(command, destination, existing_path);
+                }
+            }
+        }
+    }
+
+    fn assert_provider_prompt_save(command: &str, destination: &str, existing_path: bool) {
+        use crate::file_providers::Command;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("existing.fcproj");
+        std::fs::write(&path, b"Do not overwrite the device file").unwrap();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.session.execute("file.newBin", json!({"name":"Unsaved footage"})).unwrap();
+        assert!(app.session.is_dirty());
+        if existing_path {
+            app.session.path = Some(path.to_string_lossy().into_owned());
+        }
+        // With no native picker, Save must still be enabled for a never-saved provider project.
+        assert!(app.hooks.pick_save.is_none());
+        let host = app.hooks.file_providers.clone();
+        host.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        host.connect("test".into(), "Provider".into(), "account".into()).unwrap();
+        let doc = app.session.document_epoch;
+        let revision = app.session.revision;
+        let project = serde_json::to_value(app.session.project.as_ref()).unwrap();
+        let original_path = app.session.path.clone();
+        if command == "app.quit" {
+            assert!(intercept_quit(&mut app));
+        } else {
+            assert!(route(&mut app, command, &json!({})).unwrap().is_ok());
+        }
+        assert_eq!(app.ui.clip_dialog.as_ref().unwrap().command, command);
+        let mut harness = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+        harness.run_steps(3);
+        harness.get_by_label("Save").click();
+        harness.run_steps(3);
+        assert!(harness.state().ui.clip_dialog.is_none(), "Save must reach the provider chooser");
+        let events = host.take_events();
+        assert_eq!(events.len(), 1, "one real destination choice is required");
+        assert_eq!(events[0].metadata["type"], "saveDialog");
+        let request = events[0].metadata["requestId"].as_str().unwrap();
+        assert!(host.pending_for(doc), "the choice must belong to the current document");
+        host.resolve_dialog(request, destination, "").unwrap();
+        let commands = host.take_commands();
+        if destination == "cancel" {
+            assert!(commands.is_empty());
+        } else {
+            let [Command::Save { request: selected, doc: selected_doc, destination: selected_destination, .. }] = commands.as_slice() else {
+                panic!("expected the chosen destination to receive one save command");
+            };
+            assert_eq!(selected, request);
+            assert_eq!(*selected_doc, doc);
+            assert_eq!(selected_destination, destination);
+            if destination == "device" {
+                host.finish_device(request);
+            } else {
+                host.failed(request, "Persistence has not acknowledged the project");
+            }
+        }
+        let app = harness.state();
+        assert_eq!(app.session.document_epoch, doc);
+        assert_eq!(app.session.revision, revision);
+        assert_eq!(serde_json::to_value(app.session.project.as_ref()).unwrap(), project);
+        assert_eq!(app.session.path, original_path);
+        assert!(app.session.is_dirty(), "a destination or download is not a durable checkpoint");
+        assert!(!app.quit_confirmed);
+        assert_eq!(std::fs::read(path).unwrap(), b"Do not overwrite the device file");
+    }
 
     /// Asserts that every undoable engine command that `opens` says opens a dialog of `table` (run
     /// with no parameters) can be bound to a key, unless `except` names it with a reason (#2024).

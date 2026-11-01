@@ -40,6 +40,10 @@ A device choice uses the original native serializer and browser download writer;
 dirty state unchanged. Device formats and resource-linking behavior remain those of the official web app.
 Cancel/failure never marks the project clean. Request IDs include a random page nonce and a
 monotonic serial; delayed, duplicated and cross-account results cannot acknowledge another save.
+The unsaved-changes prompt's Save action uses this same destination choice, including projects
+that already have a device path. It dismisses the close prompt without closing the project or
+quitting; request Close/Quit again after the save completes. Cancellation, a device download,
+failed persistence and later edits therefore cannot complete a deferred close automatically.
 
 All identity-bearing events include providerId, namespace and connectionId. Provider Recent is a
 separate native UI section from this device's paths, including on Home where the app has one.
