@@ -63,7 +63,13 @@ pub fn check_open(app: &FilmcraftApp, ctx: Option<&egui::Context>) -> Result<(),
         || app.ime_composition.is_some()
         || !app.synthetic.is_empty()
         || app.synthetic_pending_step.is_some()
-        || ctx.is_some_and(|ctx| ctx.input(|input| !input.events.is_empty() || !input.raw.dropped_files.is_empty() || input.pointer.any_down()));
+        || ctx.is_some_and(|ctx| {
+            ctx.input(|input| {
+                input.events.iter().any(|event| !matches!(event, egui::Event::PointerMoved(_) | egui::Event::PointerGone))
+                    || !input.raw.dropped_files.is_empty()
+                    || input.pointer.any_down()
+            })
+        });
     let jobs = !app.session.jobs.is_empty()
         || !app.session.media_jobs.is_empty()
         || !app.session.mask_jobs.is_empty()
@@ -233,6 +239,11 @@ mod provider_routing_tests {
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
         let ctx = egui::Context::default();
         assert!(check_open(&app, Some(&ctx)).is_ok());
+        let pointer_only = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(egui::pos2(10.0, 20.0)), egui::Event::PointerGone],
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(pointer_only, |ui| assert!(check_open(&app, Some(ui.ctx())).is_ok()));
         app.ui.pen_points.push([1.0, 2.0]);
         assert!(check_open(&app, Some(&ctx)).is_err());
         app.ui.pen_points.clear();

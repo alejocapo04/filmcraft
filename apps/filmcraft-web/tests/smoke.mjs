@@ -3,6 +3,8 @@
 //
 //   cargo xtask web --serve 8765 &            # build + serve target/web/dist
 //   node apps/filmcraft-web/tests/smoke.mjs --url http://127.0.0.1:8765/ --media clip.mp4 --out /tmp/fc-web
+// Provider-only real callback regression (no --media fixture or other smoke cases):
+//   node apps/filmcraft-web/tests/smoke.mjs --provider-open-boundary --url http://127.0.0.1:8765/?empty --out target/web/provider-open-boundary
 //
 // Steps: load (timing), demo project, play 2 s (frames shown/dropped), import the media through
 // `filmcraft.importUrl`, put it on a new sequence, export H.264 (download), screenshots of each
@@ -15,6 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { checkImportBins } from "./import-bins.mjs";
 import { checkImportCollision } from "./import-collision.mjs";
+import { checkProviderOpenBoundary } from "./provider-open-boundary.mjs";
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(`--${k}`);
@@ -26,11 +29,12 @@ const media = arg("media", "web-test.mp4");
 const chrome = arg("chrome", process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "google-chrome");
 const port = Number(arg("port", "9333"));
 const headless = !process.argv.includes("--headed");
+const providerOpenBoundary = process.argv.includes("--provider-open-boundary");
 mkdirSync(out, { recursive: true });
 const downloads = join(out, "downloads");
 mkdirSync(downloads, { recursive: true });
 
-const profile = mkdtempSync(join(tmpdir(), "fc-chrome-"));
+const profile = mkdtempSync(join(providerOpenBoundary ? out : tmpdir(), "fc-chrome-"));
 const proc = spawn(chrome, [
   ...(headless ? ["--headless=new"] : []),
   `--remote-debugging-port=${port}`,
@@ -119,6 +123,9 @@ try {
   if (report.load.error) throw new Error(report.load.error);
   report.resources = await js("performance.getEntriesByType('resource').filter(e => /wasm|\\.js/.test(e.name)).map(e => ({name: e.name.split('/').pop(), kB: Math.round(e.transferSize / 1024), ms: Math.round(e.duration)}))");
   report.info = await js("filmcraft.info()");
+  if (providerOpenBoundary) {
+    report.steps.providerOpenBoundary = await checkProviderOpenBoundary({ evaluate: js });
+  } else {
   // let the UI settle (fonts, first frames)
   await sleep(1500);
   report.steps.demo = { screenshot: await shot("01-demo"), inspect: await js("filmcraft.inspect().then(i => ({window: i.window, activeSequence: i.activeSequence, fps: i.fps}))") };
@@ -177,6 +184,7 @@ try {
     },
   });
   if (!report.steps.importCollision.ok) throw new Error("import collision regression: " + JSON.stringify(report.steps.importCollision.gates));
+  }
   // still alive? (a panicked app never answers)
   await Promise.race([js("filmcraft.inspect().then(() => true)"), sleep(5000).then(() => { throw new Error("app stopped answering"); })]);
   const fatal = logs.filter((l) => /panicked at|RuntimeError|EXCEPTION/.test(l));
