@@ -57,6 +57,11 @@ private browser-table root on each open; they never become OS paths or provider 
 Downloaded bundles can be reopened through the browser's project picker or drag/drop. Desktop
 native project support does not require understanding the optional transport envelope.
 FilmCraft freezes Blob handles before asynchronous reading; pending captures remain account-scoped and block unregister/replacement. It preserves project view, complete native project metadata and source identities.
+Image sequences are validated over the full declared source duration at the original video frame rate,
+starting from the numbered source path. Source marks and interpreted playback rates never shorten
+that range. A missing first, interior or final frame, ambiguous frame names, or invalid/excessive
+sequence timing rejects capture or open before replacing the current project. Metadata alone or a
+valid bundle checksum cannot establish that a sequence is complete.
 
 Each provider operation is bounded to **80 MiB**. Media/path metadata and decoded asset counts are
 bounded independently. Large projects fail before a save event; local/native workflows remain
@@ -67,7 +72,9 @@ available. No cloud project is marked saved merely because serialization or a do
 Source fixtures cover default-off behavior, account changes and stale connection lists, forged and
 repeated acknowledgements, cancel/failure/download, bounded queues, resource aliases and correlated
 opens. App fixtures cover bounded names, bundle integrity/media round trips and delayed-checkpoint
-state. Run the normal repository unit/format/clippy/web-build checks before review. The embedding
+state. Sequence fixtures round-trip the native project model and frame bytes, reject a bundle with
+only its first frame, and cover internal gaps, foreign directories and invalid declared ranges.
+Run the normal repository unit/format/clippy/web-build checks before review. The embedding
 host also needs browser integration tests for its authenticated persistence, dialog, media recovery
 and failure handling. This feature does not claim that an arbitrary host authenticated or persisted
 anything; those are responsibilities outside the editor.

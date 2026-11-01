@@ -115,6 +115,64 @@ impl Bundle {
     }
 }
 
+/// Reject missing media before any provider bytes replace the current project.
+/// Sequence duration describes the full source, independent of source marks or interpreted playback rate.
+pub fn validate_media<'a>(project: &filmcraft_project::Project, paths: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
+    let available: BTreeSet<&str> = paths.into_iter().collect();
+    if available.len() > MAX_FILES {
+        return Err("too many provider media files".into());
+    }
+    for item in project.items.values() {
+        let Some(media) = item.as_media() else { continue };
+        if let filmcraft_project::MediaRef::File { path } = &media.media {
+            if !available.contains(path.as_str()) {
+                return Err(format!("provider bundle is missing {path}"));
+            }
+            if media.info.kind == filmcraft_media::MediaKind::ImageSequence {
+                validate_image_sequence(path, &media.info, &available)?;
+            }
+        }
+        if let Some(filmcraft_project::MediaRef::File { path }) = &media.proxy
+            && !available.contains(path.as_str())
+        {
+            return Err(format!("provider bundle is missing proxy {path}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_image_sequence(first: &str, info: &filmcraft_media::MediaInfo, available: &BTreeSet<&str>) -> Result<(), String> {
+    let numbered = filmcraft_media::sequence::Numbered::parse(first).ok_or("invalid provider image-sequence path")?;
+    let rate = info.video.as_ref().ok_or("provider image sequence has no video metadata")?.frame_rate;
+    if rate.num <= 0 || rate.den <= 0 || rate.frame_duration().0 <= 0 || info.duration.0 <= 0 {
+        return Err("invalid provider image-sequence timing".into());
+    }
+    let count = rate.frame_at(info.duration);
+    if count <= 0 || count > MAX_FILES as i64 || rate.tick_of(count) != info.duration {
+        return Err("invalid or excessive provider image-sequence frame range".into());
+    }
+    let end = numbered.number.checked_add(count as u64).ok_or("provider image-sequence range overflows")?;
+    let mut included = BTreeSet::new();
+    for path in available {
+        let cut = path.rfind(['/', '\\']).map_or(0, |i| i + 1);
+        let (dir, name) = path.split_at(cut);
+        if dir != numbered.dir {
+            continue;
+        }
+        if let Some(number) = numbered.number_of(name).filter(|number| *number >= numbered.number && *number < end)
+            && !included.insert(number)
+        {
+            return Err("provider image-sequence frame paths are ambiguous".into());
+        }
+    }
+    for number in numbered.number..end {
+        if !included.contains(&number) {
+            return Err(format!("provider bundle is missing image-sequence frame {}", numbered.path(number)));
+        }
+    }
+    Ok(())
+}
+
 /// Rebase media references and file properties without touching document text.
 pub fn rewrite(value: &mut serde_json::Value, replacements: &BTreeMap<String, String>) {
     match value {
@@ -236,6 +294,85 @@ mod tests {
             assert!(Bundle::decode(&bytes[..n]).is_err());
         }
     }
+    fn sequence_project(frames: i64) -> filmcraft_project::Project {
+        use filmcraft_media::MediaSource;
+        use filmcraft_project::{Interpretation, ItemKind, Label, MediaClip, MediaRef, Project};
+        let rate = filmcraft_time::FrameRate::FPS_25;
+        let mut info = filmcraft_media::generators::GeneratorSource::demo(filmcraft_media::DemoScene::OceanSunset).info().clone();
+        info.kind = filmcraft_media::MediaKind::ImageSequence;
+        info.duration = rate.tick_of(frames);
+        info.audio_streams.clear();
+        if let Some(video) = &mut info.video {
+            video.frame_rate = rate;
+        }
+        let mut project = Project::new("Sequence bundle");
+        project.add_item(
+            "shot_0042.png",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::File { path: "/picked/shot_0042.png".into() },
+                info,
+                interpret: Interpretation { frame_rate: Some(filmcraft_time::FrameRate::FPS_60), ..Default::default() },
+                mark_in: Some(rate.tick_of(1)),
+                mark_out: Some(rate.tick_of(2)),
+                markers: Vec::new(),
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        project
+    }
+
+    #[test]
+    fn sequence_bundle_rejects_missing_later_frame_before_open() {
+        let project = sequence_project(2);
+        let bundle = Bundle { project: serde_json::to_vec(&project).unwrap(), assets: BTreeMap::from([("/picked/shot_0042.png".into(), vec![42])]) };
+        // Transport integrity alone is insufficient: the native source duration still declares two frames.
+        let decoded = Bundle::decode(&bundle.encode().unwrap()).unwrap();
+        let native: filmcraft_project::Project = serde_json::from_slice(&decoded.project).unwrap();
+        let error = validate_media(&native, decoded.assets.keys().map(String::as_str)).unwrap_err();
+        assert!(error.contains("/picked/shot_0043.png"));
+    }
+
+    #[test]
+    fn sequence_bundle_round_trip_keeps_all_declared_frames() {
+        let project = sequence_project(3);
+        let bundle = Bundle {
+            project: serde_json::to_vec(&project).unwrap(),
+            assets: BTreeMap::from([
+                ("/picked/shot_0042.png".into(), vec![42]),
+                ("/picked/shot_0043.png".into(), vec![43]),
+                ("/picked/shot_0044.PNG".into(), vec![44]),
+            ]),
+        };
+        let decoded = Bundle::decode(&bundle.encode().unwrap()).unwrap();
+        let native: filmcraft_project::Project = serde_json::from_slice(&decoded.project).unwrap();
+        assert_eq!(native, project);
+        assert_eq!(decoded, bundle);
+        // Source marks and a 60 fps interpretation must not truncate the original 25 fps range.
+        validate_media(&native, decoded.assets.keys().map(String::as_str)).unwrap();
+        assert!(validate_media(&native, ["/picked/shot_0042.png", "/picked/shot_0043.png"]).is_err());
+    }
+
+    #[test]
+    fn sequence_bundle_rejects_gaps_and_invalid_declared_ranges() {
+        assert!(validate_media(&sequence_project(3), ["/picked/shot_0042.png", "/picked/shot_0044.png"]).is_err());
+        assert!(validate_media(&sequence_project(2), ["/picked/shot_0042.png", "/elsewhere/shot_0043.png"]).is_err());
+        assert!(validate_media(&sequence_project(2), ["/picked/shot_0042.png", "/picked/shot_0043.png", "/picked/shot_0043.PNG"]).is_err());
+        for count in [0, -1, MAX_FILES as i64 + 1] {
+            assert!(validate_media(&sequence_project(count), ["/picked/shot_0042.png"]).is_err());
+        }
+        let mut project = sequence_project(2);
+        let media = project.items.values_mut().next().unwrap().as_media_mut().unwrap();
+        media.info.duration.0 += 1;
+        assert!(validate_media(&project, ["/picked/shot_0042.png", "/picked/shot_0043.png"]).is_err());
+        let media = project.items.values_mut().next().unwrap().as_media_mut().unwrap();
+        media.info.video.as_mut().unwrap().frame_rate.den = 0;
+        assert!(validate_media(&project, ["/picked/shot_0042.png", "/picked/shot_0043.png"]).is_err());
+    }
+
     #[test]
     fn staging_is_private_and_rejects_escape() {
         assert_eq!(stage_path("/__file_provider/page-1", "/files/a/../b.png").unwrap(), "/__file_provider/page-1/files/b.png");

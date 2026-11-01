@@ -32,6 +32,7 @@ fn plan(session: &Session) -> Result<(Vec<u8>, Vec<(String, web_sys::Blob)>), St
     if files.len() > 10_000 {
         return Err("Too many provider media files".into());
     }
+    provider_bundle::validate_media(&project, files.iter().map(String::as_str))?;
     let project = filmcraft_format::encode_with_view(&project, Some(&session.project_view()), false);
     if project.len() > 16 * 1024 * 1024 {
         return Err("Provider project metadata exceeds 16 MiB".into());
@@ -79,20 +80,7 @@ fn open(app: &mut FilmcraftApp, request: &str, bytes: &[u8]) -> Result<(), Strin
     }
     let bundle = Bundle::decode(bytes)?;
     let loaded = filmcraft_format::decode(&bundle.project).map_err(|e| e.to_string())?;
-    for item in loaded.project.items.values() {
-        if let Some(media) = item.as_media() {
-            if let MediaRef::File { path } = &media.media {
-                if !bundle.assets.contains_key(path) {
-                    return Err(format!("Provider bundle is missing {path}"));
-                }
-            }
-            if let Some(MediaRef::File { path }) = &media.proxy {
-                if !bundle.assets.contains_key(path) {
-                    return Err(format!("Provider bundle is missing proxy {path}"));
-                }
-            }
-        }
-    }
+    provider_bundle::validate_media(&loaded.project, bundle.assets.keys().map(String::as_str))?;
     let root = format!("/__file_provider/{request}");
     let mut replacements = BTreeMap::new();
     let mut staged = BTreeSet::new();
