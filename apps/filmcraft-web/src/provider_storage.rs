@@ -71,13 +71,8 @@ async fn capture(project: Vec<u8>, files: Vec<(String, web_sys::Blob)>) -> Resul
     Bundle { project, assets }.encode()
 }
 
-fn open(app: &mut FilmcraftApp, request: &str, bytes: &[u8]) -> Result<(), String> {
-    if app.session.is_dirty() || app.hooks.file_providers.pending_for(filmcraft_ui_egui::provider_ui::document_id(app)) {
-        return Err("Save the current project, or close it explicitly, before opening a provider project".into());
-    }
-    if !app.session.jobs.is_empty() {
-        return Err("Finish the running media jobs before replacing the provider project".into());
-    }
+fn open(app: &mut FilmcraftApp, request: &str, bytes: &[u8], ctx: Option<&egui::Context>) -> Result<(), String> {
+    filmcraft_ui_egui::provider_ui::check_open(app, ctx)?;
     let bundle = Bundle::decode(bytes)?;
     let loaded = filmcraft_format::decode(&bundle.project).map_err(|e| e.to_string())?;
     provider_bundle::validate_media(&loaded.project, bundle.assets.keys().map(String::as_str))?;
@@ -110,7 +105,7 @@ fn open(app: &mut FilmcraftApp, request: &str, bytes: &[u8]) -> Result<(), Strin
     Ok(())
 }
 
-pub fn tick(app: &mut FilmcraftApp) {
+pub fn tick(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let host = app.hooks.file_providers.clone();
     for command in host.take_commands() {
         match command {
@@ -175,7 +170,7 @@ pub fn tick(app: &mut FilmcraftApp) {
                     app.session.saved_revision = capture.revision;
                 }
             }
-            Command::Open { request, resource: _, name, bytes } => match open(app, &request, &bytes) {
+            Command::Open { request, resource: _, name, bytes } => match open(app, &request, &bytes, Some(ctx)) {
                 Ok(()) => host.opened(
                     &request,
                     Some(Capture { doc: filmcraft_ui_egui::provider_ui::document_id(app), revision: app.session.revision, name, save_as: false }),
@@ -195,5 +190,5 @@ pub fn tick(app: &mut FilmcraftApp) {
 /// Open a downloaded transport bundle without treating its file name as a provider resource.
 pub fn open_device(app: &mut FilmcraftApp, bytes: &[u8]) -> Result<(), String> {
     let root = format!("device-{:016x}-{:016x}", js_sys::Date::now().to_bits(), js_sys::Math::random().to_bits());
-    open(app, &root, bytes)
+    open(app, &root, bytes, None)
 }
